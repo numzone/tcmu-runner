@@ -21,6 +21,7 @@
 #include "libtcmu_log.h"
 #include "libtcmu_priv.h"
 #include "libtcmu_common.h"
+#include "target_core_user_local.h"
 #include "tcmur_aio.h"
 #include "tcmur_device.h"
 #include "tcmu-runner.h"
@@ -132,6 +133,8 @@ static inline int check_iovec_length(struct tcmu_device *dev,
 {
 	size_t iov_length = tcmu_iovec_length(cmd->iovec, cmd->iov_cnt);
 
+
+
 	if (iov_length != tcmu_lba_to_byte(dev, sectors)) {
 		tcmu_dev_err(dev, "iov len mismatch: iov len %zu, xfer len %u, block size %u\n",
 			     iov_length, sectors, tcmu_dev_get_block_size(dev));
@@ -161,9 +164,14 @@ static int check_lba_and_length(struct tcmu_device *dev,
 	uint64_t start_lba = tcmu_cdb_get_lba(cdb);
 	int ret;
 
-	ret = check_iovec_length(dev, cmd, sectors);
-	if (ret)
-		return ret;
+        /* For bypass_data_area mode, skip iovec length check.
+         * Bypass mode uses ioctl for data transfer, not shared memory iovec.
+         */
+        if (!(cmd->kflags & TCMU_KFLAG_BYPASS_DATA_AREA)) {
+                ret = check_iovec_length(dev, cmd, sectors);
+                if (ret)
+                        return ret;
+        }
 
 	ret = check_lbas(dev, start_lba, sectors);
 	if (ret)
@@ -1661,10 +1669,15 @@ static int handle_caw_check(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 			     sectors, MAX_CAW_LENGTH);
 		return TCMU_STS_INVALID_CDB;
 	}
-	/* double sectors since we have two buffers */
-	ret = check_iovec_length(dev, cmd, sectors * 2);
-	if (ret)
-		return ret;
+	/* For bypass_data_area mode, skip iovec length check.
+	 * Bypass mode uses ioctl for data transfer, not shared memory iovec.
+	 */
+	if (!(cmd->kflags & TCMU_KFLAG_BYPASS_DATA_AREA)) {
+		/* double sectors since we have two buffers */
+		ret = check_iovec_length(dev, cmd, sectors * 2);
+		if (ret)
+			return ret;
+	}
 
 	ret = check_lbas(dev, start_lba, sectors);
 	if (ret)

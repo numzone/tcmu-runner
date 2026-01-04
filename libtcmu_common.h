@@ -104,6 +104,13 @@ struct tcmulib_cmd {
 	size_t iov_cnt;
 	uint8_t sense_buf[SENSE_BUFFERSIZE];
 	void *hm_private;
+
+	/* Fields for zerocopy and bypass_data_area modes */
+	uint8_t kflags;              /* Kernel flags from cmd entry header */
+	void *zc_buffer;             /* Buffer allocated for zerocopy/bypass mode */
+	size_t zc_buffer_size;       /* Size of allocated buffer */
+	struct iovec *zc_iovec;      /* Original iovec offsets for zerocopy */
+	size_t zc_iov_cnt;           /* Original iovec count for zerocopy */
 };
 
 /* Set/Get methods for the opaque tcmu_device */

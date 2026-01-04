@@ -68,8 +68,12 @@ struct tcmu_cmd_entry_hdr {
 	__u32 len_op;
 	__u16 cmd_id;
 	__u8 kflags;
-#define TCMU_UFLAG_UNKNOWN_OP 0x1
+#define TCMU_KFLAG_ZEROCOPY         0x1
+#define TCMU_KFLAG_BYPASS_DATA_AREA 0x2
 	__u8 uflags;
+#define TCMU_UFLAG_UNKNOWN_OP 0x1
+#define TCMU_UFLAG_READ_LEN   0x2
+#define TCMU_UFLAG_KEEP_BUF   0x4
 
 } __attribute__((packed));
 
@@ -153,5 +157,25 @@ enum tcmu_genl_attr {
 	__TCMU_ATTR_MAX,
 };
 #define TCMU_ATTR_MAX (__TCMU_ATTR_MAX - 1)
+
+/*
+ * ioctl structures and commands for zerocopy and bypass_data_area modes
+ */
+struct tcmu_xfer_req {
+	__u16 cmd_id;
+	__u16 __pad1;
+	__u32 iov_cnt;
+	struct iovec *iovec;
+};
+
+struct tcmu_zc_req {
+	struct iovec *iov;
+	__u32 iov_cnt;
+	__u16 cmd_id;
+};
+
+#define TCMU_IOCTL_COPY_TO_SGL    _IOW('T', 0xe0, struct tcmu_xfer_req)
+#define TCMU_IOCTL_COPY_FROM_SGL  _IOR('T', 0xe1, struct tcmu_xfer_req)
+#define TCMU_IOCTL_ZEROCOPY       _IOW('T', 0xe2, struct tcmu_zc_req)
 
 #endif
