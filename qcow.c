@@ -52,9 +52,11 @@
 #include <alloca.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <sys/ioctl.h>
 #include <scsi/scsi.h>
 #include <assert.h>
 #include <errno.h>
+#include <linux/fs.h>
 
 #include <zlib.h>
 #if defined(HAVE_LINUX_FALLOC)
@@ -1340,12 +1342,31 @@ static struct bdev_ops qcow2_ops = {
 static int raw_probe(struct bdev *bdev, int dirfd, const char *pathname)
 {
 	struct stat st;
+	uint64_t size;
+	int fd;
 
 	tcmu_dbg("%s\n", __func__);
 
 	if (faccessat(dirfd, pathname, R_OK, AT_EACCESS) == -1)
 		return -1;
 	if (fstatat(dirfd, pathname, &st, 0) == -1)
+		return -1;
+
+	if (S_ISBLK(st.st_mode)) {
+		fd = openat(dirfd, pathname, O_RDONLY);
+		if (fd < 0)
+			return -1;
+		if (ioctl(fd, BLKGETSIZE64, &size) < 0) {
+			close(fd);
+			return -1;
+		}
+		close(fd);
+		if (size != (uint64_t)bdev->size)
+			return -1;
+		return 0;
+	}
+
+	if (!S_ISREG(st.st_mode))
 		return -1;
 	/* raw file size must match expected device size */
 	if (st.st_size != bdev->size)
