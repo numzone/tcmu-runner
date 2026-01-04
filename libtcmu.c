@@ -1293,9 +1293,9 @@ static int setup_zerocopy_cmd(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 	if (!cmd->zc_iovec)
 		return -ENOMEM;
 
-	/* Copy the iovec offsets - they point to zerocopy region */
+	/* Convert iovec offsets to absolute addresses for kernel ioctl */
 	for (i = 0; i < cmd->zc_iov_cnt; i++) {
-		cmd->zc_iovec[i].iov_base = ent->req.iov[i].iov_base;
+		cmd->zc_iovec[i].iov_base = (void *)mb + (size_t)ent->req.iov[i].iov_base;
 		cmd->zc_iovec[i].iov_len = ent->req.iov[i].iov_len;
 	}
 
