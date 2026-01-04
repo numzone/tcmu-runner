@@ -23,6 +23,12 @@
 
 #define KERN_IFACE_VER 2
 
+/* Data transfer mode values for device->transfer_mode */
+#define TCMU_TRANSFER_MODE_UNKNOWN 0
+#define TCMU_TRANSFER_MODE_NORMAL 1
+#define TCMU_TRANSFER_MODE_ZEROCOPY 2
+#define TCMU_TRANSFER_MODE_BYPASS 3
+
 // The full (private) declaration
 struct tcmulib_context {
 	darray(struct tcmulib_handler) handlers;
@@ -43,6 +49,9 @@ struct tcmu_device {
 	size_t data_off;             /* Offset to data area from mmap start */
 
 	uint32_t cmd_tail;
+    
+	/* Data transfer mode: 0=unknown,1=normal,2=zerocopy,3=bypass */
+	uint8_t transfer_mode;
 
 	uint64_t num_lbas;
 	uint32_t block_size;

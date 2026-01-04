@@ -1456,12 +1456,36 @@ struct tcmulib_cmd *tcmulib_get_next_command(struct tcmu_device *dev,
 					free(cmd);
 					break;
 				}
+				/* Detect device transfer mode after successful setup */
+				if (dev->transfer_mode == TCMU_TRANSFER_MODE_UNKNOWN) {
+					int mode = TCMU_TRANSFER_MODE_NORMAL;
+					if (kflags & TCMU_KFLAG_BYPASS_DATA_AREA)
+						mode = TCMU_TRANSFER_MODE_BYPASS;
+					else if (kflags & TCMU_KFLAG_ZEROCOPY)
+						mode = TCMU_TRANSFER_MODE_ZEROCOPY;
+					dev->transfer_mode = mode;
+					tcmu_dev_info(dev, "Device transfer mode: %s\n",
+						mode == TCMU_TRANSFER_MODE_BYPASS ? "bypass" :
+						mode == TCMU_TRANSFER_MODE_ZEROCOPY ? "zerocopy" : "normal");
+				}
 			} else if (kflags & TCMU_KFLAG_ZEROCOPY) {
 				ret = setup_zerocopy_cmd(dev, cmd, ent, mb);
 				if (ret < 0) {
 					tcmu_err("Failed to setup zerocopy cmd: %d\n", ret);
 					free(cmd);
 					break;
+				}
+				/* Detect device transfer mode after successful setup */
+				if (dev->transfer_mode == TCMU_TRANSFER_MODE_UNKNOWN) {
+					int mode = TCMU_TRANSFER_MODE_NORMAL;
+					if (kflags & TCMU_KFLAG_BYPASS_DATA_AREA)
+						mode = TCMU_TRANSFER_MODE_BYPASS;
+					else if (kflags & TCMU_KFLAG_ZEROCOPY)
+						mode = TCMU_TRANSFER_MODE_ZEROCOPY;
+					dev->transfer_mode = mode;
+					tcmu_dev_info(dev, "Device transfer mode: %s\n",
+						mode == TCMU_TRANSFER_MODE_BYPASS ? "bypass" :
+						mode == TCMU_TRANSFER_MODE_ZEROCOPY ? "zerocopy" : "normal");
 				}
 			} else {
 				/* Normal mode: Convert iovec offsets to pointers */

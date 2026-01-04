@@ -974,6 +974,9 @@ static int dev_added(struct tcmu_device *dev)
 		return -ENOMEM;
 
 	tcmu_dev_set_private(dev, rdev);
+
+	/* Informational: transfer mode will be detected on first command */
+	tcmu_dev_info(dev, "Transfer mode: unknown (will be set on first command)\n");
 	list_node_init(&rdev->recovery_entry);
 	list_head_init(&rdev->cmds_list);
 	rdev->dev = dev;
