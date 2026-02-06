@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <scsi/scsi.h>
+#include <sys/ioctl.h>
 
 #include <libnl3/netlink/genl/genl.h>
 #include <libnl3/netlink/genl/mngt.h>
@@ -1132,6 +1133,126 @@ do { \
 	dev->cmd_tail = (dev->cmd_tail + tcmu_hdr_get_len((ent)->hdr.len_op)) % mb->cmdr_size; \
 } while (0)
 
+/*
+ * Copy data from kernel scatterlist to userspace buffer via ioctl.
+ * Used for WRITE commands in bypass mode.
+ *
+ * Note: We use bypass_buffer and bypass_buffer_size because cmd->iovec may be
+ * modified by handler operations (e.g., tcmu_iovec_seek).
+ */
+static int tcmu_copy_from_kernel_sgl(struct tcmu_device *dev,
+				     struct tcmulib_cmd *cmd)
+{
+	struct iovec iov;
+	struct tcmu_xfer_req req;
+	int ret;
+
+	/* Use the original buffer, not the potentially modified iovec */
+	iov.iov_base = cmd->bypass_buffer;
+	iov.iov_len = cmd->bypass_buffer_size;
+
+	req.cmd_id = cmd->cmd_id;
+	req.iov_cnt = 1;
+	req.iovec = &iov;
+
+
+	ret = ioctl(dev->fd, TCMU_IOCTL_COPY_FROM_SGL, &req);
+	if (ret < 0) {
+		tcmu_err("TCMU_IOCTL_COPY_FROM_SGL failed: %s (ret=%d, errno=%d)\n",
+			 strerror(errno), ret, errno);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Copy data from userspace buffer to kernel scatterlist via ioctl.
+ * Used for READ commands in bypass mode.
+ *
+ * Note: We use bypass_buffer and bypass_buffer_size because cmd->iovec may be
+ * modified by handler operations (e.g., tcmu_iovec_seek).
+ */
+static int tcmu_copy_to_kernel_sgl(struct tcmu_device *dev,
+				   struct tcmulib_cmd *cmd)
+{
+	struct iovec iov;
+	struct tcmu_xfer_req req;
+	int ret;
+
+	/* Use the original buffer, not the potentially modified iovec */
+	iov.iov_base = cmd->bypass_buffer;
+	iov.iov_len = cmd->bypass_buffer_size;
+
+	req.cmd_id = cmd->cmd_id;
+	req.iov_cnt = 1;
+	req.iovec = &iov;
+
+
+	ret = ioctl(dev->fd, TCMU_IOCTL_COPY_TO_SGL, &req);
+	if (ret < 0) {
+		tcmu_err("TCMU_IOCTL_COPY_TO_SGL failed: %s (ret=%d, errno=%d)\n",
+			 strerror(errno), ret, errno);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Handle bypass mode command setup.
+ * For bypass mode, kernel doesn't provide data area. We allocate our own
+ * buffer and use ioctl to transfer data with kernel.
+ */
+static int setup_bypass_cmd(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+			    uint8_t *cdb)
+{
+	size_t data_len;
+	uint32_t block_size = tcmu_dev_get_block_size(dev);
+	uint32_t xfer_length = tcmu_cdb_get_xfer_length(cdb);
+
+
+	/*
+	 * Calculate data length from CDB.
+	 * Since kernel only enables bypass mode for READ/WRITE commands,
+	 * this calculation (xfer_length * block_size) is always correct.
+	 */
+	data_len = (size_t)xfer_length * block_size;
+
+	if (data_len == 0) {
+		tcmu_err("data len is 0, skipping buffer allocation\n");
+		cmd->iov_cnt = 0;
+		cmd->bypass_buffer = NULL;
+		cmd->bypass_buffer_size = 0;
+		return 0;
+	}
+
+	cmd->bypass_buffer = malloc(data_len);
+	if (!cmd->bypass_buffer) {
+		tcmu_err("failed to allocate %zu bytes\n", data_len);
+		return -ENOMEM;
+	}
+
+	cmd->bypass_buffer_size = data_len;
+	cmd->iov_cnt = 1;
+	cmd->iovec[0].iov_base = cmd->bypass_buffer;
+	cmd->iovec[0].iov_len = data_len;
+
+	/*
+	 * For TO_DEVICE direction commands, copy data from kernel to 
+	 * bypass_buffer.
+	 * For FROM_DEVICE direction commands, data will be copied back 
+	 * in command_complete.
+	 */
+	if (TCMU_KFLAG_IS_BYPASS_TO_DEVICE(cmd->kflags)) {
+		if (tcmu_copy_from_kernel_sgl(dev, cmd) < 0) {
+			free(cmd->bypass_buffer);
+			cmd->bypass_buffer = NULL;
+			return -EIO;
+		}
+	}
+
+	return 0;
+}
+
 struct tcmulib_cmd *tcmulib_get_next_command(struct tcmu_device *dev,
 					     int hm_cmd_size)
 {
@@ -1149,6 +1270,9 @@ struct tcmulib_cmd *tcmulib_get_next_command(struct tcmu_device *dev,
 			struct tcmulib_cmd *cmd;
 			uint8_t *cdb = (uint8_t *) mb + ent->req.cdb_off;
 			int cdb_len = tcmu_cdb_get_length(cdb);
+			uint8_t kflags = ent->hdr.kflags;
+			size_t iov_cnt_alloc;
+			int ret;
 
 			if (cdb_len < 0) {
 				/*
@@ -1159,29 +1283,56 @@ struct tcmulib_cmd *tcmulib_get_next_command(struct tcmu_device *dev,
 				break;
 			}
 
+			/*
+			 * For bypass mode, we'll create our own iovec.
+			 * For zerocopy/normal mode, use kernel's iov_cnt.
+			 */
+			if (TCMU_KFLAG_IS_BYPASS(kflags))
+				iov_cnt_alloc = 1;  /* We'll use single buffer */
+			else
+				iov_cnt_alloc = ent->req.iov_cnt;
+
 			/* Alloc memory for cmd itself, iovec and cdb */
 			cmd = malloc(sizeof(*cmd) + hm_cmd_size + cdb_len +
-				     sizeof(*cmd->iovec) * ent->req.iov_cnt);
+				     sizeof(*cmd->iovec) * iov_cnt_alloc);
 			if (!cmd)
 				return NULL;
-			cmd->cmd_id = ent->hdr.cmd_id;
 
-			/* Convert iovec addrs in-place to not be offsets */
-			cmd->iov_cnt = ent->req.iov_cnt;
-			cmd->iovec = (struct iovec *) (cmd + 1);
-			for (i = 0; i < ent->req.iov_cnt; i++) {
-				cmd->iovec[i].iov_base = (void *) mb +
-					(size_t) ent->req.iov[i].iov_base;
-				cmd->iovec[i].iov_len = ent->req.iov[i].iov_len;
-			}
+			/* Initialize cmd fields */
+			memset(cmd, 0, sizeof(*cmd));
+			cmd->cmd_id = ent->hdr.cmd_id;
+			cmd->kflags = kflags;
+			cmd->iovec = (struct iovec *)(cmd + 1);
 
 			/* Copy cdb that currently points to the command ring */
-			cmd->cdb = (uint8_t *) (cmd->iovec + cmd->iov_cnt);
-			memcpy(cmd->cdb, (void *) mb + ent->req.cdb_off, cdb_len);
+			cmd->cdb = (uint8_t *)(cmd->iovec + iov_cnt_alloc);
+			memcpy(cmd->cdb, (void *)mb + ent->req.cdb_off, cdb_len);
 
 			/* Setup handler memory area after iovecs and cdb */
 			if (hm_cmd_size)
 				cmd->hm_private = cmd->cdb + cdb_len;
+
+			/*
+			 * Handle different modes:
+			 * 1. BYPASS: Allocate buffer, use ioctl for data
+			 * 2. Normal and ZEROCOPY: Convert iovec offsets to pointers
+			 */
+
+			if (TCMU_KFLAG_IS_BYPASS(kflags)) {
+				ret = setup_bypass_cmd(dev, cmd, cdb);
+				if (ret < 0) {
+					tcmu_err("Failed to setup bypass cmd: %d\n", ret);
+					free(cmd);
+					break;
+				}
+			} else {
+				cmd->iov_cnt = ent->req.iov_cnt;
+				for (i = 0; i < ent->req.iov_cnt; i++) {
+					cmd->iovec[i].iov_base = (void *)mb +
+						(size_t)ent->req.iov[i].iov_base;
+					cmd->iovec[i].iov_len = ent->req.iov[i].iov_len;
+				}
+			}
 
 			TCMU_UPDATE_DEV_TAIL(dev, mb, ent);
 			return cmd;
@@ -1342,6 +1493,26 @@ void tcmulib_command_complete(
 		ent->hdr.cmd_id = cmd->cmd_id;
 	}
 
+	/*
+	 * Handle bypass mode cleanup.
+	 * For from device direction commands that succeeded, copy data back to kernel.
+	 * Always free the bypass_buffer for all bypass mode commands.
+	 */
+	if (TCMU_KFLAG_IS_BYPASS(cmd->kflags)) {
+		if (TCMU_KFLAG_IS_BYPASS_FROM_DEVICE(cmd->kflags) &&
+		    cmd->bypass_buffer && result == TCMU_STS_OK) {
+			if (tcmu_copy_to_kernel_sgl(dev, cmd) < 0) {
+				tcmu_err("Failed to copy data to kernel\n");
+				result = TCMU_STS_HW_ERR;
+			}
+		}
+
+		if (cmd->bypass_buffer) {
+			free(cmd->bypass_buffer);
+			cmd->bypass_buffer = NULL;
+		}
+	}
+
 	ent->rsp.scsi_status = tcmu_sts_to_scsi(result, cmd->sense_buf);
 	if (ent->rsp.scsi_status == SAM_STAT_CHECK_CONDITION) {
 		memcpy(ent->rsp.sense_buffer, cmd->sense_buf,
@@ -1349,6 +1520,7 @@ void tcmulib_command_complete(
 	}
 
 	TCMU_UPDATE_RB_TAIL(mb, ent);
+
 	free(cmd);
 }
 

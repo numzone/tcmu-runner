@@ -23,6 +23,20 @@ extern "C" {
 
 #include "libtcmu_common.h"
 
+/*
+ * Helper macros for bypass mode flag checking.
+ */
+
+/* Check if bypass mode is enabled */
+#define TCMU_KFLAG_IS_BYPASS(kflags) \
+	(((kflags) & (TCMU_KFLAG_BYPASS_FROM_DEVICE | TCMU_KFLAG_BYPASS_TO_DEVICE)) != 0)
+
+#define TCMU_KFLAG_IS_BYPASS_FROM_DEVICE(kflags) \
+	(((kflags) & TCMU_KFLAG_BYPASS_FROM_DEVICE) != 0)
+
+#define TCMU_KFLAG_IS_BYPASS_TO_DEVICE(kflags) \
+	(((kflags) & TCMU_KFLAG_BYPASS_TO_DEVICE) != 0)
+
 enum tcmulib_cfg_type {
 	TCMULIB_CFG_DEV_CFGSTR,
 	TCMULIB_CFG_DEV_SIZE,

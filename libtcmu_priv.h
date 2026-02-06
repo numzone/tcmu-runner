@@ -40,8 +40,12 @@ struct tcmu_device {
 
 	struct tcmu_mailbox *map;
 	size_t map_len;
+	size_t data_off;             /* Offset to data area from mmap start */
 
 	uint32_t cmd_tail;
+
+	/* Data transfer mode: 0=unknown,1=normal,2=zerocopy,3=bypass */
+	uint8_t transfer_mode;
 
 	uint64_t num_lbas;
 	uint32_t block_size;
